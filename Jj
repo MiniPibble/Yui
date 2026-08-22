@@ -1,0 +1,795 @@
+--[[
+    Yui Code Sniper List
+    Premium black + turquoise UI — compact 16:9, 5 touching tabs, sliding
+    indicator, crossfade panels, per-tab Execute button, drag-to-move
+    (mouse + touch/mobile), and juiced-up open/drag/close motion.
+
+    IMPORTANT — about the Execute buttons:
+    Each Execute button calls OnExecute(tabIndex, tabName). That function is
+    left as a placeholder on purpose. This script does NOT fetch or run any
+    remote code (no loadstring/HttpGet chains to third-party "hubs"), because
+    that pattern is a common vector for session-stealing / malicious payloads
+    in the Roblox exploiting scene. Wire OnExecute up to whatever YOU trust
+    and control — e.g. running a local ModuleScript, calling your own
+    RemoteEvent, or toggling something you wrote yourself.
+
+    Drop into a LocalScript (StarterPlayerScripts) or run via executor.
+--]]
+
+local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+
+-- ====== THEME (black + turquoise #40E0D0) ======
+local THEME = {
+    Void      = Color3.fromRGB(7, 7, 10),
+    Panel     = Color3.fromRGB(14, 13, 18),
+    Panel2    = Color3.fromRGB(20, 19, 26),
+    Line      = Color3.fromRGB(33, 31, 40),
+    Accent    = Color3.fromRGB(64, 224, 208),   -- #40E0D0
+    AccentHi  = Color3.fromRGB(128, 255, 240),  -- lighter turquoise
+    AccentSoft= Color3.fromRGB(40, 180, 168),   -- deeper turquoise
+    AccentDim = Color3.fromRGB(30, 120, 112),   -- muted turquoise
+    TextHi    = Color3.fromRGB(242, 241, 246),
+    TextMid   = Color3.fromRGB(154, 152, 163),
+    TextLow   = Color3.fromRGB(80, 78, 89),
+    Danger    = Color3.fromRGB(224, 90, 74),
+}
+
+local EASE_FAST    = TweenInfo.new(0.14, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+local EASE_SLIDE   = TweenInfo.new(0.32, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+local EASE_FADE    = TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+local EASE_POP     = TweenInfo.new(0.22, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+local EASE_PRESS   = TweenInfo.new(0.08, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+local EASE_PULSE   = TweenInfo.new(1.1, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true)
+local EASE_SETTLE  = TweenInfo.new(0.35, Enum.EasingStyle.Elastic, Enum.EasingDirection.Out)
+local EASE_CLOSE   = TweenInfo.new(0.26, Enum.EasingStyle.Back, Enum.EasingDirection.In)
+
+local function new(class, props, children)
+    local inst = Instance.new(class)
+    for prop, val in pairs(props or {}) do
+        inst[prop] = val
+    end
+    for _, child in ipairs(children or {}) do
+        child.Parent = inst
+    end
+    return inst
+end
+
+local function tween(inst, info, goal)
+    local t = TweenService:Create(inst, info, goal)
+    t:Play()
+    return t
+end
+
+-- ====== ROOT ======
+local screenGui = new("ScreenGui", {
+    Name = "YuiCodeSniperList",
+    ResetOnSpawn = false,
+    ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+    IgnoreGuiInset = true,
+    Parent = playerGui,
+})
+
+-- compact 16:9 frame, centered
+local frame = new("Frame", {
+    Name = "Frame",
+    Size = UDim2.fromOffset(460, 259),
+    Position = UDim2.fromScale(0.5, 0.5),
+    AnchorPoint = Vector2.new(0.5, 0.5),
+    BackgroundColor3 = THEME.Panel,
+    BorderSizePixel = 0,
+    ClipsDescendants = true,
+    Parent = screenGui,
+})
+new("UICorner", { CornerRadius = UDim.new(0, 10), Parent = frame })
+local frameStroke = new("UIStroke", { Color = THEME.Line, Thickness = 1, Parent = frame })
+local frameScale = new("UIScale", { Scale = 1, Parent = frame })
+
+new("UIGradient", {
+    Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, Color3.fromRGB(20, 18, 25)),
+        ColorSequenceKeypoint.new(0.5, THEME.Panel),
+        ColorSequenceKeypoint.new(1, Color3.fromRGB(10, 9, 13)),
+    }),
+    Rotation = 100,
+    Parent = frame,
+})
+
+-- soft turquoise ambient glow behind the panel (sits just outside, low alpha)
+local ambientGlow = new("Frame", {
+    Name = "AmbientGlow",
+    Size = UDim2.new(1, 40, 1, 40),
+    Position = UDim2.fromScale(0.5, 0.5),
+    AnchorPoint = Vector2.new(0.5, 0.5),
+    BackgroundColor3 = THEME.Accent,
+    BackgroundTransparency = 0.93,
+    BorderSizePixel = 0,
+    ZIndex = 0,
+    Parent = screenGui,
+})
+new("UICorner", { CornerRadius = UDim.new(0, 24), Parent = ambientGlow })
+
+-- ====== TITLE BAR (drag handle) ======
+local titleBar = new("Frame", {
+    Size = UDim2.new(1, 0, 0, 40),
+    BackgroundColor3 = THEME.Void,
+    BorderSizePixel = 0,
+    Active = true,
+    Parent = frame,
+})
+new("UICorner", { CornerRadius = UDim.new(0, 10), Parent = titleBar })
+new("Frame", {
+    Size = UDim2.new(1, 0, 0, 10),
+    Position = UDim2.new(0, 0, 1, -10),
+    BackgroundColor3 = THEME.Void,
+    BorderSizePixel = 0,
+    Parent = titleBar,
+})
+new("Frame", {
+    Size = UDim2.new(1, 0, 0, 1),
+    Position = UDim2.new(0, 0, 1, -1),
+    BackgroundColor3 = THEME.Line,
+    BorderSizePixel = 0,
+    Parent = titleBar,
+})
+
+-- reticle mark with breathing glow
+local reticle = new("Frame", {
+    Size = UDim2.fromOffset(16, 16),
+    Position = UDim2.fromOffset(12, 12),
+    BackgroundTransparency = 1,
+    Parent = titleBar,
+})
+local ring = new("Frame", {
+    Size = UDim2.fromOffset(13, 13),
+    Position = UDim2.fromScale(0.5, 0.5),
+    AnchorPoint = Vector2.new(0.5, 0.5),
+    BackgroundTransparency = 1,
+    Parent = reticle,
+})
+new("UICorner", { CornerRadius = UDim.new(1, 0), Parent = ring })
+local ringStroke = new("UIStroke", { Color = THEME.Accent, Thickness = 1.2, Parent = ring })
+new("Frame", {
+    Size = UDim2.fromOffset(2, 2),
+    Position = UDim2.fromScale(0.5, 0.5),
+    AnchorPoint = Vector2.new(0.5, 0.5),
+    BackgroundColor3 = THEME.Accent,
+    BorderSizePixel = 0,
+    Parent = reticle,
+})
+tween(ringStroke, EASE_PULSE, { Transparency = 0.65 })
+
+-- title text
+new("TextLabel", {
+    Text = "YUI CODE SNIPER LIST",
+    Font = Enum.Font.GothamBold,
+    TextSize = 12,
+    TextColor3 = THEME.TextHi,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    BackgroundTransparency = 1,
+    Position = UDim2.fromOffset(34, 6),
+    Size = UDim2.fromOffset(300, 14),
+    Parent = titleBar,
+})
+new("TextLabel", {
+    Text = "TARGET ACQUISITION · WATCHLIST",
+    Font = Enum.Font.Code,
+    TextSize = 8,
+    TextColor3 = THEME.TextLow,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    BackgroundTransparency = 1,
+    Position = UDim2.fromOffset(34, 21),
+    Size = UDim2.fromOffset(300, 12),
+    Parent = titleBar,
+})
+
+-- status pill with breathing glow
+local statusDot = new("Frame", {
+    Size = UDim2.fromOffset(5, 5),
+    Position = UDim2.new(1, -58, 0, 17),
+    BackgroundColor3 = Color3.fromRGB(63, 174, 92),
+    BorderSizePixel = 0,
+    Parent = titleBar,
+})
+new("UICorner", { CornerRadius = UDim.new(1, 0), Parent = statusDot })
+tween(statusDot, EASE_PULSE, { BackgroundTransparency = 0.55 })
+new("TextLabel", {
+    Text = "ARMED",
+    Font = Enum.Font.Code,
+    TextSize = 8,
+    TextColor3 = THEME.TextMid,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    BackgroundTransparency = 1,
+    Position = UDim2.new(1, -48, 0, 13),
+    Size = UDim2.fromOffset(40, 14),
+    Parent = titleBar,
+})
+
+-- close button
+local closeBtn = new("TextButton", {
+    Text = "×",
+    Font = Enum.Font.GothamBold,
+    TextSize = 15,
+    TextColor3 = THEME.TextMid,
+    BackgroundTransparency = 1,
+    Position = UDim2.new(1, -24, 0, 6),
+    Size = UDim2.fromOffset(18, 18),
+    ZIndex = 3,
+    Parent = titleBar,
+})
+closeBtn.MouseEnter:Connect(function() tween(closeBtn, EASE_FAST, { TextColor3 = THEME.Danger }) end)
+closeBtn.MouseLeave:Connect(function() tween(closeBtn, EASE_FAST, { TextColor3 = THEME.TextMid }) end)
+
+-- forward declarations (bubble is built further down, but referenced above)
+local showBubble, hideBubble
+
+local closing = false
+closeBtn.MouseButton1Click:Connect(function()
+    if closing then return end
+    closing = true
+
+    tween(ambientGlow, EASE_FADE, { BackgroundTransparency = 1 })
+    tween(frame, EASE_CLOSE, {
+        Rotation = -6,
+    })
+    tween(frameScale, EASE_CLOSE, { Scale = 0 })
+    local t = tween(frame, TweenInfo.new(0.22, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+        BackgroundTransparency = 1,
+    })
+    tween(frameStroke, EASE_FADE, { Transparency = 1 })
+    t.Completed:Connect(function()
+        frame.Visible = false
+        frame.Rotation = 0
+        showBubble()
+    end)
+end)
+
+-- ====== DRAG TO MOVE (mouse + touch/mobile), reusable ======
+local function makeDraggable(handle, target, onDragStart, onDragEnd)
+    local dragging = false
+    local dragInput, dragStart, startPos
+
+    local function update(input)
+        local delta = input.Position - dragStart
+        target.Position = UDim2.new(
+            startPos.X.Scale, startPos.X.Offset + delta.X,
+            startPos.Y.Scale, startPos.Y.Offset + delta.Y
+        )
+    end
+
+    handle.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = target.Position
+            if onDragStart then onDragStart() end
+
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    if dragging then
+                        dragging = false
+                        if onDragEnd then onDragEnd() end
+                    end
+                end
+            end)
+        end
+    end)
+
+    handle.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement
+            or input.UserInputType == Enum.UserInputType.Touch then
+            dragInput = input
+        end
+    end)
+
+    UserInputService.InputChanged:Connect(function(input)
+        if input == dragInput and dragging then
+            update(input)
+        end
+    end)
+end
+
+makeDraggable(titleBar, frame,
+    function()
+        if closing then return end
+        tween(frameScale, EASE_FAST, { Scale = 1.035 })
+        tween(frameStroke, EASE_FAST, { Color = THEME.Accent, Thickness = 1.4, Transparency = 0 })
+        tween(ambientGlow, EASE_FAST, { BackgroundTransparency = 0.82 })
+    end,
+    function()
+        tween(frameScale, EASE_SETTLE, { Scale = 1 })
+        tween(frameStroke, EASE_FADE, { Color = THEME.Line, Thickness = 1, Transparency = 0 })
+        tween(ambientGlow, EASE_FADE, { BackgroundTransparency = 0.93 })
+    end
+)
+
+-- keep ambient glow following the frame every frame while it moves
+frame:GetPropertyChangedSignal("Position"):Connect(function()
+    ambientGlow.Position = frame.Position
+end)
+
+-- ====== TABS BAR (touching, no gaps) ======
+local tabsBar = new("Frame", {
+    Size = UDim2.new(1, 0, 0, 30),
+    Position = UDim2.fromOffset(0, 40),
+    BackgroundColor3 = THEME.Void,
+    BorderSizePixel = 0,
+    Parent = frame,
+})
+new("Frame", {
+    Size = UDim2.new(1, 0, 0, 1),
+    Position = UDim2.new(0, 0, 1, -1),
+    BackgroundColor3 = THEME.Line,
+    BorderSizePixel = 0,
+    Parent = tabsBar,
+})
+
+-- sliding indicator
+local indicator = new("Frame", {
+    Name = "Indicator",
+    Size = UDim2.new(1 / 5, 0, 1, 0),
+    Position = UDim2.new(0, 0, 0, 0),
+    BackgroundColor3 = Color3.fromRGB(23, 18, 30),
+    BorderSizePixel = 0,
+    ZIndex = 1,
+    Parent = tabsBar,
+})
+local indicatorLine = new("Frame", {
+    Size = UDim2.new(1, 0, 0, 2),
+    Position = UDim2.new(0, 0, 1, -2),
+    BackgroundColor3 = THEME.Accent,
+    BorderSizePixel = 0,
+    Parent = indicator,
+})
+new("UIGradient", {
+    Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, THEME.AccentDim),
+        ColorSequenceKeypoint.new(0.5, THEME.AccentHi),
+        ColorSequenceKeypoint.new(1, THEME.AccentDim),
+    }),
+    Parent = indicatorLine,
+})
+local glow = new("Frame", {
+    Size = UDim2.new(1, -10, 0, 6),
+    Position = UDim2.new(0, 5, 1, -6),
+    BackgroundColor3 = THEME.Accent,
+    BackgroundTransparency = 0.85,
+    BorderSizePixel = 0,
+    Parent = indicator,
+})
+new("UICorner", { CornerRadius = UDim.new(1, 0), Parent = glow })
+
+-- ====== CONTENT AREA ======
+local content = new("Frame", {
+    Size = UDim2.new(1, -20, 1, -82),
+    Position = UDim2.fromOffset(10, 76),
+    BackgroundTransparency = 1,
+    Parent = frame,
+})
+
+-- ====== EXECUTE PLACEHOLDER ======
+-- Fill this in with logic YOU trust — no remote fetch/execute is done here.
+local function OnExecute(tabIndex, tabName)
+    print(("[Yui Code Sniper List] Execute pressed on tab %d (%s)."):format(tabIndex, tabName))
+    -- e.g. game.ReplicatedStorage.YourRemote:FireServer(tabName)
+    -- or: require(script.YourLocalModule).Run()
+end
+
+-- ====== TAB + PANEL BUILDER ======
+local TAB_NAMES = {
+    "SourcesHub Sniper Cocd",
+    "GammaHub",
+    "Ace Hub Sniper",
+    "Tab 4",
+    "Tab 5",
+}
+local tabs, labels, panels, groups = {}, {}, {}, {}
+local activeIndex = 1
+
+local function setActiveTab(index)
+    if index == activeIndex then return end
+
+    tween(indicator, EASE_SLIDE, {
+        Position = UDim2.new((index - 1) / 5, 0, 0, 0),
+    })
+
+    for i, lbl in ipairs(labels) do
+        tween(lbl, EASE_FAST, { TextColor3 = (i == index) and THEME.TextHi or THEME.TextLow })
+    end
+
+    local oldIndex = activeIndex
+    local oldGroup = groups[oldIndex]
+    local newGroup = groups[index]
+
+    panels[index].Visible = true
+    newGroup.GroupTransparency = 1
+    newGroup.Position = UDim2.fromOffset(0, 6)
+    tween(newGroup, EASE_FADE, { GroupTransparency = 0 })
+    tween(newGroup, EASE_POP, { Position = UDim2.fromOffset(0, 0) })
+
+    local fadeOut = tween(oldGroup, EASE_FADE, { GroupTransparency = 1 })
+    fadeOut.Completed:Connect(function()
+        panels[oldIndex].Visible = false
+    end)
+
+    activeIndex = index
+end
+
+for i, name in ipairs(TAB_NAMES) do
+    local tabBtn = new("TextButton", {
+        Name = "Tab" .. i,
+        Text = "",
+        AutoButtonColor = false,
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1 / 5, 0, 1, 0),
+        Position = UDim2.new((i - 1) / 5, 0, 0, 0),
+        ZIndex = 2,
+        Parent = tabsBar,
+    })
+    if i > 1 then
+        new("Frame", {
+            Size = UDim2.new(0, 1, 1, -10),
+            Position = UDim2.fromScale(0, 0.5),
+            AnchorPoint = Vector2.new(0, 0.5),
+            BackgroundColor3 = THEME.Line,
+            BackgroundTransparency = 0.5,
+            BorderSizePixel = 0,
+            Parent = tabBtn,
+        })
+    end
+
+    local label = new("TextLabel", {
+        Text = string.format("%02d", i),
+        Font = Enum.Font.GothamSemibold,
+        TextSize = 10.5,
+        TextColor3 = (i == 1) and THEME.TextHi or THEME.TextLow,
+        BackgroundTransparency = 1,
+        Size = UDim2.fromScale(1, 1),
+        TextTruncate = Enum.TextTruncate.AtEnd,
+        Parent = tabBtn,
+    })
+    labels[i] = label
+    tabs[i] = tabBtn
+
+    local group = new("CanvasGroup", {
+        Name = "Group" .. i,
+        Size = UDim2.fromScale(1, 1),
+        BackgroundTransparency = 1,
+        GroupTransparency = (i == 1) and 0 or 1,
+        Parent = content,
+    })
+    groups[i] = group
+
+    local panel = new("Frame", {
+        Name = "Panel" .. i,
+        Size = UDim2.fromScale(1, 1),
+        BackgroundTransparency = 1,
+        Visible = (i == 1),
+        Parent = group,
+    })
+    panels[i] = panel
+
+    -- header
+    local header = new("Frame", {
+        Size = UDim2.new(1, 0, 0, 22),
+        BackgroundTransparency = 1,
+        Parent = panel,
+    })
+    new("TextLabel", {
+        Text = name,
+        Font = Enum.Font.GothamBold,
+        TextSize = 12,
+        TextColor3 = THEME.TextHi,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+        BackgroundTransparency = 1,
+        Size = UDim2.fromScale(0.62, 1),
+        Parent = header,
+    })
+    new("TextLabel", {
+        Text = "0 ENTRIES",
+        Font = Enum.Font.Code,
+        TextSize = 8,
+        TextColor3 = THEME.TextLow,
+        TextXAlignment = Enum.TextXAlignment.Right,
+        BackgroundTransparency = 1,
+        Position = UDim2.new(0.4, 0, 0, 0),
+        Size = UDim2.fromScale(0.6, 1),
+        Parent = header,
+    })
+    new("Frame", {
+        Size = UDim2.new(1, 0, 0, 1),
+        Position = UDim2.new(0, 0, 0, 22),
+        BackgroundColor3 = THEME.Line,
+        BorderSizePixel = 0,
+        Parent = panel,
+    })
+
+    -- ===== HOW TO USE instructions (shown on every tab) =====
+    local howTo = new("Frame", {
+        Name = "HowTo",
+        Size = UDim2.new(1, 0, 0, 40),
+        Position = UDim2.fromOffset(0, 28),
+        BackgroundColor3 = THEME.Panel2,
+        BackgroundTransparency = 0.4,
+        BorderSizePixel = 0,
+        Parent = panel,
+    })
+    new("UICorner", { CornerRadius = UDim.new(0, 6), Parent = howTo })
+    new("UIStroke", { Color = THEME.Line, Thickness = 1, Parent = howTo })
+    new("UIPadding", {
+        PaddingLeft = UDim.new(0, 10),
+        PaddingRight = UDim.new(0, 10),
+        PaddingTop = UDim.new(0, 5),
+        Parent = howTo,
+    })
+    new("TextLabel", {
+        Text = "HOW TO USE SCRIPT?",
+        Font = Enum.Font.GothamBold,
+        TextSize = 9,
+        TextColor3 = THEME.Accent,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 0, 12),
+        Parent = howTo,
+    })
+    new("TextLabel", {
+        Text = "Select a specific tab that u wanna use and execute it",
+        Font = Enum.Font.Gotham,
+        TextSize = 8.5,
+        TextColor3 = THEME.TextMid,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextWrapped = true,
+        BackgroundTransparency = 1,
+        Position = UDim2.fromOffset(0, 13),
+        Size = UDim2.new(1, 0, 0, 22),
+        Parent = howTo,
+    })
+
+    -- list (leaves room at top for instructions, bottom for execute button)
+    local list = new("ScrollingFrame", {
+        Name = "List",
+        Size = UDim2.new(1, 0, 1, -112),
+        Position = UDim2.fromOffset(0, 72),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        CanvasSize = UDim2.fromOffset(0, 0),
+        ScrollBarThickness = 2,
+        ScrollBarImageColor3 = THEME.AccentDim,
+        AutomaticCanvasSize = Enum.AutomaticSize.Y,
+        Parent = panel,
+    })
+    new("UIListLayout", { Padding = UDim.new(0, 4), Parent = list })
+
+    -- ===== EXECUTE BUTTON =====
+    local execBtn = new("TextButton", {
+        Name = "Execute",
+        Text = "EXECUTE",
+        Font = Enum.Font.GothamBold,
+        TextSize = 11,
+        TextColor3 = THEME.TextHi,
+        AutoButtonColor = false,
+        BackgroundColor3 = THEME.Accent,
+        Position = UDim2.new(0, 0, 1, -32),
+        Size = UDim2.new(1, 0, 0, 32),
+        Parent = panel,
+    })
+    new("UICorner", { CornerRadius = UDim.new(0, 7), Parent = execBtn })
+    new("UIGradient", {
+        Color = ColorSequence.new({
+            ColorSequenceKeypoint.new(0, THEME.AccentHi),
+            ColorSequenceKeypoint.new(1, THEME.AccentSoft),
+        }),
+        Rotation = 90,
+        Parent = execBtn,
+    })
+    local execStroke = new("UIStroke", {
+        Color = THEME.AccentHi,
+        Transparency = 0.5,
+        Thickness = 1,
+        Parent = execBtn,
+    })
+
+    execBtn.MouseEnter:Connect(function()
+        tween(execBtn, EASE_FAST, { Size = UDim2.new(1, 0, 0, 34) })
+        tween(execStroke, EASE_FAST, { Transparency = 0 })
+    end)
+    execBtn.MouseLeave:Connect(function()
+        tween(execBtn, EASE_FAST, { Size = UDim2.new(1, 0, 0, 32) })
+        tween(execStroke, EASE_FAST, { Transparency = 0.5 })
+    end)
+    execBtn.MouseButton1Down:Connect(function()
+        tween(execBtn, EASE_PRESS, { Size = UDim2.new(1, -8, 0, 30) })
+    end)
+    execBtn.MouseButton1Up:Connect(function()
+        tween(execBtn, EASE_POP, { Size = UDim2.new(1, 0, 0, 34) })
+    end)
+    execBtn.MouseButton1Click:Connect(function()
+        OnExecute(i, name)
+
+        local flash = new("Frame", {
+            Size = UDim2.fromScale(1, 1),
+            BackgroundColor3 = Color3.new(1, 1, 1),
+            BackgroundTransparency = 0.55,
+            BorderSizePixel = 0,
+            ZIndex = 5,
+            Parent = execBtn,
+        })
+        new("UICorner", { CornerRadius = UDim.new(0, 7), Parent = flash })
+        local t = tween(flash, TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+            BackgroundTransparency = 1,
+        })
+        t.Completed:Connect(function() flash:Destroy() end)
+    end)
+
+    tabBtn.MouseEnter:Connect(function()
+        if activeIndex ~= i then
+            tween(label, EASE_FAST, { TextColor3 = THEME.TextMid })
+        end
+    end)
+    tabBtn.MouseLeave:Connect(function()
+        if activeIndex ~= i then
+            tween(label, EASE_FAST, { TextColor3 = THEME.TextLow })
+        end
+    end)
+    tabBtn.MouseButton1Click:Connect(function()
+        setActiveTab(i)
+    end)
+end
+
+-- ====== REOPEN BUBBLE ("Y" circle) ======
+local bubble = new("TextButton", {
+    Name = "ReopenBubble",
+    Text = "Y",
+    Font = Enum.Font.GothamBlack,
+    TextSize = 18,
+    TextColor3 = THEME.TextHi,
+    AutoButtonColor = false,
+    BackgroundColor3 = THEME.Accent,
+    Size = UDim2.fromOffset(0, 0),
+    Position = UDim2.new(1, -70, 1, -140),
+    AnchorPoint = Vector2.new(0.5, 0.5),
+    Active = true,
+    Visible = false,
+    ZIndex = 10,
+    Parent = screenGui,
+})
+new("UICorner", { CornerRadius = UDim.new(1, 0), Parent = bubble })
+new("UIGradient", {
+    Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, THEME.AccentHi),
+        ColorSequenceKeypoint.new(1, THEME.AccentSoft),
+    }),
+    Rotation = 90,
+    Parent = bubble,
+})
+local bubbleStroke = new("UIStroke", {
+    Color = THEME.AccentHi,
+    Thickness = 1.4,
+    Transparency = 0.3,
+    Parent = bubble,
+})
+local bubbleScale = new("UIScale", { Scale = 1, Parent = bubble })
+
+-- breathing glow ring so it reads as "tap me" without being annoying
+tween(bubbleStroke, EASE_PULSE, { Transparency = 0.85 })
+
+function showBubble()
+    bubble.Visible = true
+    bubble.Size = UDim2.fromOffset(46, 46)
+    bubbleScale.Scale = 0
+    tween(bubbleScale, TweenInfo.new(0.4, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Scale = 1 })
+end
+
+function hideBubble()
+    local t = tween(bubbleScale, EASE_CLOSE, { Scale = 0 })
+    t.Completed:Connect(function()
+        bubble.Visible = false
+    end)
+end
+
+local bubbleDragging = false
+makeDraggable(bubble, bubble,
+    function()
+        bubbleDragging = false
+        tween(bubbleScale, EASE_FAST, { Scale = 1.12 })
+    end,
+    function()
+        tween(bubbleScale, EASE_SETTLE, { Scale = 1 })
+    end
+)
+
+-- treat a real drag vs a tap: if pointer moved more than a few pixels, don't reopen
+local pressPos
+bubble.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+        pressPos = input.Position
+    end
+end)
+
+bubble.MouseButton1Click:Connect(function()
+    hideBubble()
+    closing = false
+    frame.Visible = true
+    frame.Rotation = 0
+    frame.BackgroundTransparency = 0
+    frameStroke.Transparency = 0
+    frameScale.Scale = 0.75
+    tween(frameScale, TweenInfo.new(0.4, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Scale = 1 })
+    tween(ambientGlow, TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { BackgroundTransparency = 0.93 })
+end)
+
+-- Call e.g. _G.YuiAddEntry(1, "Name", "TAG", "Value") to add a row to Tab 1
+local function AddEntry(tabIndex, name, tag, value)
+    local list = panels[tabIndex]:FindFirstChild("List")
+    if not list then return end
+
+    local row = new("Frame", {
+        Size = UDim2.new(1, 0, 0, 26),
+        BackgroundColor3 = THEME.Panel2,
+        BorderSizePixel = 0,
+        BackgroundTransparency = 1,
+        Parent = list,
+    })
+    new("UICorner", { CornerRadius = UDim.new(0, 5), Parent = row })
+    new("UIStroke", { Color = THEME.Line, Thickness = 1, Parent = row })
+    new("UIPadding", {
+        PaddingLeft = UDim.new(0, 10),
+        PaddingRight = UDim.new(0, 10),
+        Parent = row,
+    })
+    tween(row, EASE_FADE, { BackgroundTransparency = 0 })
+
+    new("TextLabel", {
+        Text = name,
+        Font = Enum.Font.GothamMedium,
+        TextSize = 10.5,
+        TextColor3 = THEME.TextHi,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        BackgroundTransparency = 1,
+        Size = UDim2.fromScale(0.5, 1),
+        Parent = row,
+    })
+    new("TextLabel", {
+        Text = tag or "",
+        Font = Enum.Font.Code,
+        TextSize = 8.5,
+        TextColor3 = THEME.Accent,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        BackgroundTransparency = 1,
+        Position = UDim2.fromScale(0.5, 0),
+        Size = UDim2.fromScale(0.25, 1),
+        Parent = row,
+    })
+    new("TextLabel", {
+        Text = value or "",
+        Font = Enum.Font.Code,
+        TextSize = 9.5,
+        TextColor3 = THEME.TextMid,
+        TextXAlignment = Enum.TextXAlignment.Right,
+        BackgroundTransparency = 1,
+        Position = UDim2.fromScale(0.75, 0),
+        Size = UDim2.fromScale(0.25, 1),
+        Parent = row,
+    })
+end
+
+_G.YuiAddEntry = AddEntry
+
+-- entrance animation (springy pop + fade)
+frameScale.Scale = 0.75
+frame.BackgroundTransparency = 1
+frameStroke.Transparency = 1
+ambientGlow.BackgroundTransparency = 1
+tween(frameScale, TweenInfo.new(0.4, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Scale = 1 })
+tween(frame, EASE_FADE, { BackgroundTransparency = 0 })
+tween(frameStroke, EASE_FADE, { Transparency = 0 })
+tween(ambientGlow, TweenInfo.new(0.4, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { BackgroundTransparency = 0.93 })
+
+return screenGui
